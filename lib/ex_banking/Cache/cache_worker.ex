@@ -31,77 +31,84 @@ defmodule ExBanking.CacheWorker do
     {:noreply, table}
   end
 
-  def get(key) do
-    case :ets.lookup(__MODULE__, key) do
-      [] ->
-        nil
-
-      value ->
-        value
-    end
+  def handle_info(:get_user, user) do
+    :ets.match(__MODULE__, {{user, :"$1"}, :"$2"})
   end
 
-  def put(data), do: :ets.insert(__MODULE__, data)
-
-  def member(key), do: :ets.member(__MODULE__, key)
-
-  def select(pattern), do: :ets.select(__MODULE__, [pattern])
-
-  def replace(pattern), do: :ets.select_replace(__MODULE__, [pattern])
-
-  # NEW implementation
-  def handle_info(:get_user, state) do
-    :ets.match(__MODULE__, {{state.user, :"$1"}, :"$2"})
+  def handle_info(:deposit, operation) do
+    :ets.lookup(__MODULE__, {operation.to_user, operation.currency})
+    |> deposit(operation)
   end
 
-  def handle_info(:deposit, state) do
-    new_balance = :ets.replace(__MODULE__, {{state.user, :"$1", :"$2"}, [{:==, :"$1", state.currency}],
-    [{{state.user, :"$1", {:+, :"$2", state.amount}}}]})
+  def handle_info(:withdraw, operation) do
+    :ets.lookup(__MODULE__, {operation.from_user, operation.currency})
+    |> withdraw(operation.amount)
+  end
+
+  def handle_info(:get_balance, operation) do
+    :ets.lookup(__MODULE__, {operation.from_user, operation.currency})
+    |> get_balance()
+  end
+
+  def handle_info(:send, operation) do
+    :ets.lookup(__MODULE__, {operation.from_user, operation.currency})
+    |> send_amount(operation)
+  end
+
+  defp deposit([], operation) do
+    :ets.insert(__MODULE__, {{operation.to_user, operation.currency}, operation.amount})
+    [{_, new_balance}] = :ets.lookup(__MODULE__, {operation.to_user, operation.currency})
 
     {:ok, new_balance}
   end
 
-  def handle_info(:withdraw, state) do
-    :ets.lookup(__MODULE__, {state.user, state.currency})
-    |> withdraw(state.amount)
+  defp deposit([{{user, currency}, balance}], operation) do
+    :ets.insert(__MODULE__, {{user, operation.currency}, operation.amount + balance})
+    [{_, new_balance}] = :ets.lookup(__MODULE__, {user, currency})
+
+    {:ok, new_balance}
   end
 
-  def handle_info(:get_balance, state) do
-    :ets.lookup(__MODULE__, {state.user, state.currency})
-    |> get_balance()
+  defp withdraw([], _amount) do
+    {:error, :not_enough_money}
   end
 
-  def handle_info(:send, state) do
-    :ets.lookup(__MODULE__, {state.user, state.currency})
-    |> send(state.amount)
-  end
-
-  defp withdraw([], amount), do: {:error, :not_enough_money}
-
-  defp withdraw([{key, balance}], amount) when amount > balance, do: {:error, :not_enough_money}
+  defp withdraw([{_key, balance}], amount) when amount > balance, do: {:error, :not_enough_money}
 
   defp withdraw([{{user, currency}, balance}], amount) do
     new_balance = balance - amount
-    :ets.select_replace(__MODULE__, [{{user, :"$1", :"$2"}, [{:==, :"$1", currency}],
-    [{{user, :"$1", {:-, :"$2", amount}}}]}])
+
+    :ets.select_replace(__MODULE__, [
+      {{user, :"$1", :"$2"}, [{:==, :"$1", currency}], [{{user, :"$1", {:-, :"$2", amount}}}]}
+    ])
 
     {:ok, new_balance}
   end
 
   defp get_balance([]), do: {:ok, 0}
 
-  defp get_balance([{key, balance}]), do: {:ok, balance}
+  defp get_balance([{_key, balance}]), do: {:ok, balance}
 
-  defp send([], _), do: {:error, :not_enough_money}
+  def send_amount([], _amount), do: {:error, :not_enough_money}
 
-  defp send([{key, balance}], amount) when amount > balance,
+  def send_amount([{_key, balance}], %{amount: amount}) when amount > balance,
     do: {:error, :not_enough_money}
 
-  defp send([{key, balance}], amount) do
-    new_balance = balance - amount
+  def send_amount([{key, balance}], operation) do
+    new_balance = balance - operation.amount
     :ets.insert(__MODULE__, {key, new_balance})
-    # {:ok, receiver_balance} = ExBanking.UserProducer.make_transaction(%{transaction | type: :deposit})
 
-    # {:ok, new_balance, receiver_balance}
+    new_operation = %{
+      type: :deposit,
+      to_user: operation.to_user,
+      from_user: operation.from_user,
+      amount: operation.amount,
+      currency: operation.currency,
+      receiver: true
+    }
+
+    {:ok, receiver_balance} = ExBanking.UserProducer.make_operation(new_operation)
+
+    {:ok, new_balance, receiver_balance}
   end
 end

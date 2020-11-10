@@ -1,6 +1,5 @@
 defmodule ExBanking.UserSupervisor do
   use Supervisor
-  require Logger
 
   @name ExBanking.UserSupervisor
 
@@ -8,49 +7,43 @@ defmodule ExBanking.UserSupervisor do
     Supervisor.start_link(__MODULE__, [], name: @name)
   end
 
-  def create_user(name) do
-    begin_start(name)
-    |> do_start(name)
-    |> end_start()
+  def create_user(user) do
+    user_exists?(user)
+    |> start_user_processes(user)
+    |> respond()
   end
 
-  def begin_start(name) do
-    exists?(name)
-    |> can_start?
+  def user_exists?(user) do
+    case Registry.lookup(Registry.User, user) do
+      [_ | _] -> true
+      _ -> false
+    end
   end
 
-  def exists?(name) do
-    Registry.lookup(Registry.User, name)
-  end
+  defp start_user_processes(true, _user), do: {:error, :user_already_exists}
 
-  def can_start?(list) when length(list) == 0, do: true
-  def can_start?(_), do: false
-
-  def do_start(false, _), do: {:error, :user_does_not_exists}
-
-  def do_start(true, name) do
+  defp start_user_processes(false, user) do
     {:ok, producer} =
       DynamicSupervisor.start_child(
-        ExBanking.User.DynamicSupervisor,
-        worker(ExBanking.User, [name])
+        ExBanking.UserProducer.DynamicSupervisor,
+        worker(ExBanking.UserProducer, [user])
       )
 
     {:ok, _} =
       DynamicSupervisor.start_child(
-        ExBanking.User.DynamicSupervisor,
-        worker(ExBanking.UserConsumer, [name])
+        ExBanking.UserProducer.DynamicSupervisor,
+        worker(ExBanking.UserConsumer, [user])
       )
 
     {:ok, producer}
   end
 
-  def end_start({:ok, _}), do: :ok
-  def end_start({:error, _}), do: {:error, :user_already_exists}
-  def end_start(reason), do: reason
+  defp respond({:ok, _}), do: :ok
+  defp respond(error), do: error
 
   def init(_) do
     children = [
-      {DynamicSupervisor, name: ExBanking.User.DynamicSupervisor, strategy: :one_for_one}
+      {DynamicSupervisor, name: ExBanking.UserProducer.DynamicSupervisor, strategy: :one_for_one}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

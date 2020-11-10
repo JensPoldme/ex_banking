@@ -1,50 +1,43 @@
-defmodule ExBanking.User do
-  @moduledoc """
-  Genstage producer is called directly from ex_banking
-  """
+defmodule ExBanking.UserProducer do
   use GenStage
-  alias ExBanking.Transaction
 
   def init(counter) do
     {:producer, {:queue.new(), counter}}
   end
 
-  ###
-  ## Public API
-  ###
   def start_link(user) do
-    GenStage.start_link(__MODULE__, 0, name: via_tuple(user))
+    GenStage.start_link(__MODULE__, 0, name: registry_tuple(user))
   end
 
-  @doc """
-  Sends the transaction to its user
-  """
-  @spec make_transaction(transaction :: Transaction.t()) :: tuple()
-  def make_transaction(%Transaction{type: :send, sender: user} = transaction) do
-    GenStage.call(via_tuple(user), {:transaction, transaction})
+  def make_operation(%{type: :deposit, to_user: user} = operation) do
+    GenStage.call(registry_tuple(user), operation)
   end
 
-  def make_transaction(%Transaction{receiver: user} = transaction) do
-    GenStage.call(via_tuple(user), {:transaction, transaction})
+  def make_operation(%{from_user: user} = operation) do
+    GenStage.call(registry_tuple(user), operation)
   end
 
-  defp via_tuple(user) do
-    {:via, Registry, {Registry.User, user}}
-  end
-
-  ###
-  ## GenStage calls
-  ###
-
-  def handle_call({:transaction, transaction}, from, {queue, pending_demand})
+  def handle_call(operation, from, {queue, pending_demand})
       when pending_demand > 0 do
-    queue = :queue.in({from, transaction}, queue)
+    queue = :queue.in({from, operation}, queue)
 
     send(self(), :new_data)
     {:noreply, [], {queue, pending_demand - 1}}
   end
 
-  def handle_call({:transaction, _transaction}, _from, {queue, pending_demand}) do
+  def handle_call(%{type: :send}, _from, {queue, pending_demand}) do
+    error = {:error, :too_many_requests_to_sender}
+
+    {:reply, error, [], {queue, pending_demand}}
+  end
+
+  def handle_call(%{receiver: true}, _from, {queue, pending_demand}) do
+    error = {:error, :too_many_requests_to_receiver}
+
+    {:reply, error, [], {queue, pending_demand}}
+  end
+
+  def handle_call(_operation, _from, {queue, pending_demand}) do
     error = {:error, :too_many_requests_to_user}
 
     {:reply, error, [], {queue, pending_demand}}
@@ -60,13 +53,17 @@ defmodule ExBanking.User do
     end
   end
 
-  def handle_demand(incoming_demand, {queue, pending_demand}) when incoming_demand > 0 do
+  def handle_demand(demand, {queue, pending_demand}) when demand > 0 do
     case :queue.out(queue) do
-      {{:value, transaction}, queue} ->
-        {:noreply, [transaction], {queue, incoming_demand + pending_demand - 1}}
+      {{:value, operation}, queue} ->
+        {:noreply, [operation], {queue, demand + pending_demand - 1}}
 
       {:empty, queue} ->
-        {:noreply, [], {queue, incoming_demand + pending_demand}}
+        {:noreply, [], {queue, demand + pending_demand}}
     end
+  end
+
+  defp registry_tuple(user) do
+    {:via, Registry, {Registry.User, user}}
   end
 end

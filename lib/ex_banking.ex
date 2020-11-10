@@ -1,5 +1,5 @@
 defmodule ExBanking do
-  alias ExBanking.ExBankingService
+  alias ExBanking.{UserProducer, Operation}
 
   @type banking_error ::
           {:error,
@@ -13,53 +13,43 @@ defmodule ExBanking do
            | :too_many_requests_to_sender
            | :too_many_requests_to_receiver}
 
+  @spec create_user(user :: String.t) :: :ok | banking_error
   def create_user(<<user::binary>>) do
-    with true <- ExBankingService.create_user(user) do
-      :ok
-    else
-      error -> error
-    end
+    ExBanking.UserSupervisor.create_user(user)
   end
 
   def create_user(_user), do: {:error, :wrong_arguments}
 
-  def deposit(<<user::binary>>, amount, <<currency::binary>>)
-      when is_number(amount) and 0 < amount do
-    with true <- ExBankingService.validate_user(user),
-         new_balance <- ExBankingService.deposit(user, amount, currency) do
-      {:ok, new_balance}
+  @spec deposit(user :: String.t(), amount :: number, currency :: String.t()) ::
+          {:ok, new_balance :: number} | banking_error
+  def deposit(user, amount, currency) do
+    with operation = %{} <- Operation.new_operation(:deposit, user, amount, currency),
+         {:ok, balance} <- UserProducer.make_operation(operation) do
+      {:ok, convert(balance)}
     else
       error -> error
     end
   end
 
-  def deposit(_user, _amount, _currency), do: {:error, :wrong_arguments}
-
-  def withdraw(<<user::binary>>, amount, <<currency::binary>>)
-      when is_number(amount) and 0 < amount do
-    with true <- ExBankingService.validate_user(user),
-         balance when is_number(balance) <- ExBankingService.get_balance(user, currency),
-         true <- ExBankingService.check_balance(balance, amount),
-         new_balance <- ExBankingService.withdraw(user, amount, currency) do
-      {:ok, new_balance}
+  @spec withdraw(user :: String.t, amount :: number, currency :: String.t) :: {:ok, new_balance :: number} | banking_error
+  def withdraw(user, amount, currency) do
+    with operation = %{} <- Operation.new_operation(:withdraw, user, amount, currency),
+         {:ok, balance} <- UserProducer.make_operation(operation) do
+      {:ok, convert(balance)}
     else
       error -> error
     end
   end
-
-  def withdraw(_user, _amount, _currency), do: {:error, :wrong_arguments}
 
   @spec get_balance(any, any) :: {:error, :user_does_not_exist | :wrong_arguments} | {:ok, any}
-  def get_balance(<<user::binary>>, <<currency::binary>>) do
-    with true <- ExBankingService.validate_user(user),
-         balance when is_number(balance) <- ExBankingService.get_balance(user, currency) do
-      {:ok, balance}
+  def get_balance(user, currency) do
+    with operation = %{} <- Operation.new_operation(:get_balance, user, currency),
+         {:ok, balance} <- UserProducer.make_operation(operation) do
+      {:ok, convert(balance)}
     else
       error -> error
     end
   end
-
-  def get_balance(_user, _currency), do: {:error, :wrong_arguments}
 
   @spec send(
           from_user :: String.t(),
@@ -67,22 +57,19 @@ defmodule ExBanking do
           amount :: number,
           currency :: String.t()
         ) :: {:ok, from_user_balance :: number, to_user_balance :: number} | banking_error
-  def send(<<from_user::binary>>, <<to_user::binary>>, amount, <<currency::binary>>)
-      when is_number(amount) and 0 < amount do
-    with {:sender, true} <- {:sender, ExBankingService.validate_user(from_user)},
-         {:receiver, true} <- {:receiver, ExBankingService.validate_user(to_user)},
-         sender_current_balance when is_number(sender_current_balance) <-
-           ExBankingService.get_balance(from_user, currency),
-         true <- ExBankingService.check_balance(sender_current_balance, amount),
-         sender_new_balance <- ExBankingService.withdraw(from_user, amount, currency),
-         receiver_balance <- ExBankingService.deposit(to_user, amount, currency) do
-      {:ok, sender_new_balance, receiver_balance}
+  def send(from_user, to_user, amount, currency) do
+    with operation = %{} <- Operation.new_operation(:send, from_user, to_user, amount, currency),
+         {:ok, sender_balance, receiver_balance} <- UserProducer.make_operation(operation) do
+      {:ok, convert(sender_balance), convert(receiver_balance)}
     else
-      {:sender, {_error, :user_does_not_exist}} -> {:error, :sender_does_not_exist}
-      {:receiver, {_error, :user_does_not_exist}} -> {:error, :receiver_does_not_exist}
       error -> error
     end
   end
 
-  def send(_from_user, _to_user, _amount, _currency), do: {:error, :wrong_arguments}
+  defp convert(amount) do
+    amount
+    |> Decimal.new()
+    |> Decimal.round(2)
+    |> Decimal.to_float()
+  end
 end
