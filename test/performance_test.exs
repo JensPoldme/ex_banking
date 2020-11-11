@@ -1,9 +1,6 @@
 defmodule PerformanceTest do
   use ExUnit.Case, async: false
 
-  import ExBanking
-  alias ExBanking.UserProducer
-
   test "handles 10 requests" do
     user = "user#{:rand.uniform(1000)}"
     ExBanking.create_user(user)

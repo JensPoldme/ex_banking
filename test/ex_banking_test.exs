@@ -2,8 +2,6 @@ defmodule ExBankingTest do
   use ExUnit.Case, async: false
   doctest ExBanking
 
-  alias ExBanking.CacheWorker, as: Cache
-
   @range 10000
 
   describe "create_user/1" do
